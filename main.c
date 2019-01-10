@@ -13,6 +13,9 @@
 #include <sys/types.h>
 
 #define BUFFER_SIZE 8192
+#define ULONG_MAX (UINTPTR_MAX >> ((sizeof(size_t) - sizeof(unsigned long)) * 8))
+#define LONG_MAX (INTPTR_MAX >> ((sizeof(size_t) - sizeof(unsigned long)) * 8))
+volatile bool terminate;
 static char buffer[BUFFER_SIZE];
 enum ncr_mode{
     NCR_MODE_PAIR,
@@ -54,14 +57,19 @@ static inline int strtoushort(char* s, unsigned short* res){
     *res = (unsigned short)r;
     return 0;
 }
-static inline int strtoint(char* str, int* res){
-    char* end = str + strlen(str);
-    char* fin = end;
-    long int r = strtol(str, &fin, 10);
-    if((size_t)r >= (size_t)1 << (sizeof(int)*8-1)) return -1;
+static inline int strtosizes(const char* start, const char* end, size_t* res){
+    const char* fin = end;
+    long r = strtol(start, (char**)&fin, 10);
+    if (
+        r < 0 || 
+        (size_t)r > ULONG_MAX
+    ) return -1;
     if(fin != end) return -1;
-    *res = (int)r;
+    *res = (size_t)r;
     return 0;
+}
+static inline int strtosize(const char* str, size_t* res){
+    return strtosizes(str,  str + strlen(str), res);
 }
 static inline int server_accept(int server_fd, int* client_fd){
     int addrlen = sizeof(struct sockaddr_in6); 
@@ -77,7 +85,7 @@ static inline int server_accept(int server_fd, int* client_fd){
     }
     return 0;
 }
-static inline int get_somaxconn(int* somaxconn){
+static inline int get_somaxconn(size_t* somaxconn){
     FILE* f = fopen("/proc/sys/net/core/somaxconn", "r");
     //ceil(lb(2^63-1)/lb(10)) = 20
     char buff[22];
@@ -91,10 +99,10 @@ static inline int get_somaxconn(int* somaxconn){
         return -1;
     }
     buff[cnt] = 0;
-    if(strtoint(buff, somaxconn)){
+    if(strtosize(buff, somaxconn)){
         fputs(
             "/proc/sys/net/core/somaxconn couldn't be "
-                "interpreted as an integer\n",
+                "interpreted as an unsigned integer\n",
             stderr
         );
         return -1;
@@ -105,13 +113,12 @@ static inline int get_somaxconn(int* somaxconn){
     }
     return 0;
 }
-static inline int parse_cmd_args(int argc, char** argv, unsigned short* port){
-}
 static inline void close_all(struct pollfd* polls, size_t client_count){
     if(close(polls[0].fd))fputs("Failed to close server socket\n", stderr);
     for(struct pollfd* p = polls + 1; p != polls + client_count + 1; p++){
         if(close(p->fd))fputs("Failed to close client socket\n", stderr);
     }
+    free(polls);
 }
 int transmit_data(struct pollfd* src, struct pollfd* tgt, char* buffer, size_t buffer_size){
      if(src->revents & POLLIN){
@@ -130,19 +137,19 @@ int transmit_data(struct pollfd* src, struct pollfd* tgt, char* buffer, size_t b
 }
 void print_help(){
     puts(
-        "netcat roulette usage: \n"
-        "ncr <port> <mode> [<args>]\n"
+        "netcat roulette 1.0 \n"
+        "ncr <mode> [<args>]\n"
         "<mode>:\n"
-        "  pair [-t <timeout>]\n"
-        "  pairs [-c <count>] [-t <timeout>]\n"
-        "  roulette [c <max_peers>] [-t <timeout>]"
+        "  pair [-m <max pending listeners>] [-t <timeout>] <port>\n"
+        "  roulette [-m <max peers>] [-t <timeout>] <port>\n"
+        "<timeout>: [<days>d][<hours>h][<minutes>m][<seconds>s]\n"
     );
 }
-int roulette_mode(int server_fd){
+int roulette_mode(int server_fd, size_t max_peers, struct timeval timeout){
 }
-int pair_mode(int server_fd){
+int pair_mode(int server_fd, size_t max_pending, struct timeval timeout){
     size_t client_count = 0;
-    struct pollfd polls[3];
+    struct pollfd* polls = malloc(1 + max_pending);
     for(struct pollfd* p = polls; p != polls + 3; p++){
         p->events = POLLIN | POLLERR;
     }
@@ -194,34 +201,120 @@ int pair_mode(int server_fd){
             }
         }
     }
-    return EXIT_SUCCESS;
+    return EXIT_FAILURE;
+}
+int parsePort(char* c, unsigned short* port){
+    if(strtoushort(c, port)){
+        fprintf(stderr, "Invalid local port '%s'\n", c);
+        return -1;
+    }
+    return 0;
+}
+int parseMaxValue(const char* c, size_t* val, const char* val_name){
+    if(strtosize(c, val)){
+        fprintf(stderr, "Invalid value for %s '%s'\n", val_name, c);
+        return -1;
+    }
+    return 0;
+}
+int parseTimeout(const char* c, struct timeval* timeout){
+    size_t timeout_seconds = 0;
+    const char* i = c;
+    unsigned long temp;
+    int last_found = -1;
+    void print_error(){
+        fprintf(stderr, "Invalid timeout '%s'\n", c);
+    }
+    void print_error_overflow(){
+        fprintf(stderr, "timeout '%s' overflows the valid range\n", c);
+    }
+    int handle_unit(int vals_entry, size_t seconds){
+        if (last_found > vals_entry) {
+            print_error(); 
+            return -1;
+        }
+        last_found = vals_entry;
+        if(temp > UINTPTR_MAX / seconds){
+            print_error_overflow(); return -1;
+        }
+        seconds *= temp;
+        if(UINTPTR_MAX - timeout_seconds < seconds){
+            print_error_overflow(); return -1;
+        }
+        timeout_seconds += seconds;
+        return 0;
+    }
+    while(*i != '\0'){
+        while(*i >= '0' && *i <='9')i++;
+        if(strtosizes(c, i, &temp)){
+            print_error();
+            return -1;
+        }
+        switch(*i){
+            case 'd': handle_unit(0, 86400); break;
+            case 'h': handle_unit(1, 3600); break;
+            case 'm': handle_unit(2, 60); break;
+            case 's': handle_unit(3, 1); break;
+            default: print_error(); return -1;
+        }
+        c = ++i;
+    }
+    timeout->tv_sec = timeout_seconds;
+    timeout->tv_usec = 0;
+    //as time_t isn't very well defined, we do this to check for overflows
+    if((size_t)timeout->tv_sec != timeout_seconds || timeout->tv_sec < 0){
+        print_error_overflow(); return -1;
+    }
+    return 0;
 }
 int main(int argc, char** argv){
     unsigned short port;
     enum ncr_mode mode;
-    int somaxconn;
+    size_t somaxconn;
     int server_fd;
     if(argc < 3){
         print_help();
         return EXIT_FAILURE;
     }
-    if(strtoushort(argv[1], &port)){
-         fprintf(stderr, "Invalid local port %s\n",argv[1]);
-         return -1;
+    const char* mode_str = argv[1];
+    if(!strcmp(mode_str, "pair")){
+         mode = NCR_MODE_PAIR;
     }
-    const char* mode_str = argv[2];
-    if(strcmp(mode_str, "pair")) mode = NCR_MODE_PAIR;
-    else if(strcmp(mode_str, "pairs")) mode = NCR_MODE_PAIRS;
-    else if(strcmp(mode_str, "roulette"))  mode = NCR_MODE_ROULETTE;
-    else{
+    else if(!strcmp(mode_str, "roulette")){
+         mode = NCR_MODE_ROULETTE;
+    }
+    else if(!strcmp(mode_str, "--help")){
         print_help();
+        return EXIT_SUCCESS;
+    }
+    else{
+        fprintf(stderr, "Unknown mode %s\n", mode_str);
         return EXIT_FAILURE;
+    }
+    struct timeval timeout;
+    size_t max_connections;
+    int i = 2;
+    while(i < argc - 1){
+        if(!strcmp(argv[i], "-t")){
+            if(parseTimeout(argv[i+1], &timeout)) return EXIT_FAILURE;
+            i+=2;
+        }
+        else if(!strcmp(argv[i], "-m")){
+            parseMaxValue(argv[i+1], &max_connections, (mode == NCR_MODE_PAIR) ? "max pending connections" : "max pairs");
+            i+=2;
+        }
+        else{
+            fprintf(stderr, "Unknown option %s\n", argv[i]);
+            return EXIT_FAILURE;
+        }
+    } 
+    if(argc < i) {
+        fputs("No port specified\n", stderr);
     }
     if(get_somaxconn(&somaxconn))return EXIT_FAILURE;
     if(server_init(&server_fd, port, somaxconn))return EXIT_FAILURE;
     switch (mode){
-        case NCR_MODE_PAIR: return pair_mode(server_fd); 
-        case NCR_MODE_PAIRS: return pair_mode(server_fd);
-        case NCR_MODE_ROULETTE: return roulette_mode(server_fd);
+        case NCR_MODE_PAIR: return pair_mode(server_fd, max_connections, timeout); 
+        case NCR_MODE_ROULETTE: return roulette_mode(server_fd, max_connections, timeout);
     }
 }
