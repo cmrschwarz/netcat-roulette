@@ -562,7 +562,8 @@ void print_help(){
         "  -v: verbosity: show more output with each level, up to vvv\n"
         "  --help / -h: show this help, ignore all other options and exit\n"
         "  -t <timeout>: close a close connection when nothing is sent for <timeout>\n"
-        "     <timeout> = [<days>d][<hours>h][<minutes>m][<seconds>s]"
+        "     <timeout> = [<days>d][<hours>h][<minutes>m][<seconds>s]\n"
+        "  -m <max listeners>: max sockets in queue, any more are rejected\n"
     );
 }
 int parse_cmd_args(
