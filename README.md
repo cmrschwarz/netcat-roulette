@@ -22,14 +22,16 @@ ncr [--help] [-ruvvvh] [-m <max listeners>] [-t <timeout>] <port>
 # Server (at example.com)
 ./ncr -m 30 -t 5m 1234
 
-# Recipient (must be started before the Sender!)
-: | nc example.com 1234 > file.txt
+# Destination (must be started before the Sender!)
+nc -d example.com 1234 > file.txt
 
 # Sender
 nc -q 0 example.com 1234 < file.txt
 
-# ":|" and "-q 0" respectively are necessary for exiting immediately
+# "-d" and "-q 0" respectively are necessary for nc to exit immediately
 # after the transfer in some netcat implementations
+# if -d is not available, you can use `nc example.com 1234 </dev/null > file.txt`
+# if -q 0 is not available, it is uneccessary and your nc will do the right thing by default
 ```
 
 ### Advanced Filesharing
@@ -37,8 +39,8 @@ nc -q 0 example.com 1234 < file.txt
 # Server (at example.com) when multiple recievers are possible
 ./ncr -r -m 30 -t 5m 1234
 
-# Recipient with Decrytion and Progress Bar
-: | nc example.com 1234 | gpg -d | pv | file.txt
+# Destination with Decrytion and Progress Bar
+nc -d example.com 1234 | gpg -d | pv | file.txt
 
 # Sender with Encryption and Progress Bar
 pv file.txt | gpg -esr myfriend@example.com | nc -q 0 example.com 1234
@@ -62,5 +64,7 @@ nc example.com 1234
 nc example.com 1234
 
 # Machine to be remote controlled
-mktemp -u | xargs -I@ sh -c "mkfifo @; sh -i <@ 2>&1 | nc example.com 1234 > @; rm @"
+nc -e /bin/bash example.com 1234
+# if -e is not available in your netcat you may use
+# `mktemp -u | xargs -I@ sh -c "mkfifo @; sh -i <@ 2>&1 | nc example.com 1234 > @; rm @"`
 ```
